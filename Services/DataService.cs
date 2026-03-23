@@ -51,6 +51,10 @@ namespace JJSTierBot.Services
             _data.Players.FirstOrDefault(p =>
                 p.Name.ToLower() == name.ToLower() && !p.Retired);
 
+        public Player? FindPlayerIncludeRetired(string name) =>
+            _data.Players.FirstOrDefault(p =>
+                p.Name.ToLower() == name.ToLower());
+
         public void AddHistory(string playerName, string oldRank,
             string newRank, string action, string changedBy)
         {
@@ -64,37 +68,47 @@ namespace JJSTierBot.Services
                 Timestamp  = DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm")
             });
 
-            if (_data.History.Count > 50)
-                _data.History = _data.History.Take(50).ToList();
+            if (_data.History.Count > 100)
+                _data.History = _data.History.Take(100).ToList();
         }
-
-        public static string RobloxAvatarUrl(string robloxUsername) =>
-            $"https://www.roblox.com/headshot-thumbnail/image?userId=0&width=150&height=150&format=png";
 
         public static string RobloxProfileUrl(string robloxUsername) =>
             $"https://www.roblox.com/users/profile?username={Uri.EscapeDataString(robloxUsername)}";
 
         public static string RankEmoji(string rank) => rank switch
         {
-            "S"        => "🏆",
-            "A+"       => "⭐",
-            "A"        => "🔥",
-            "B"        => "💪",
-            "C"        => "⚔️",
-            "D"        => "🛡️",
+            "S"        => "👑",
+            "A+"       => "🔴",
+            "A"        => "🟠",
+            "B"        => "🔵",
+            "C"        => "🟢",
+            "D"        => "⚪",
             "F"        => "💀",
-            "Unranked" => "❓",
+            "Unranked" => "❔",
             "Retired"  => "🎖️",
-            _          => "❓"
+            _          => "❔"
+        };
+
+        public static string RankLabel(string rank) => rank switch
+        {
+            "S"        => "S  — ELITE",
+            "A+"       => "A+ — TOP TIER",
+            "A"        => "A  — HIGH TIER",
+            "B"        => "B  — MID TIER",
+            "C"        => "C  — LOW MID",
+            "D"        => "D  — LOW TIER",
+            "F"        => "F  — BOTTOM",
+            "Unranked" => "UNRANKED",
+            _          => rank
         };
 
         public static uint RankColor(string rank) => rank switch
         {
-            "S"        => 0xFFAA00,
+            "S"        => 0xFFD700,
             "A+"       => 0xFF4444,
-            "A"        => 0xFF8800,
+            "A"        => 0xFF8C00,
             "B"        => 0x4488FF,
-            "C"        => 0x44FF88,
+            "C"        => 0x44CC44,
             "D"        => 0xAAAAAA,
             "F"        => 0x555555,
             "Unranked" => 0x333333,

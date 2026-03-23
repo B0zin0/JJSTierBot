@@ -22,7 +22,6 @@ namespace JJSTierBot.Services
         {
             var channelId = _data.Data.TierListChannelId;
             if (channelId == 0) return;
-
             if (_client.GetChannel(channelId) is not ITextChannel channel) return;
 
             var embed = _renderer.BuildTierListEmbed();
@@ -36,6 +35,7 @@ namespace JJSTierBot.Services
                     if (msg != null)
                     {
                         await msg.ModifyAsync(p => p.Embed = embed);
+                        await UpdateAllTimePinnedList(channel);
                         return;
                     }
                 }
@@ -46,6 +46,33 @@ namespace JJSTierBot.Services
             await newMsg.PinAsync();
             _data.Data.PinnedMessageId = newMsg.Id;
             _data.Save();
+
+            await UpdateAllTimePinnedList(channel);
+        }
+
+        private async Task UpdateAllTimePinnedList(ITextChannel channel)
+        {
+            var embed = _renderer.BuildAllTimeEmbed();
+
+            if (_data.Data.AllTimePinnedMessageId != 0)
+            {
+                try
+                {
+                    var msg = await channel.GetMessageAsync(_data.Data.AllTimePinnedMessageId)
+                              as IUserMessage;
+                    if (msg != null)
+                    {
+                        await msg.ModifyAsync(p => p.Embed = embed);
+                        return;
+                    }
+                }
+                catch { }
+            }
+
+            var newMsg = await channel.SendMessageAsync(embed: embed);
+            await newMsg.PinAsync();
+            _data.Data.AllTimePinnedMessageId = newMsg.Id;
+            _data.Save();
         }
 
         public async Task LogChange(string action, Player player,
@@ -53,7 +80,6 @@ namespace JJSTierBot.Services
         {
             var channelId = _data.Data.LogChannelId;
             if (channelId == 0) return;
-
             if (_client.GetChannel(channelId) is not ITextChannel channel) return;
 
             var embed = _renderer.BuildChangeEmbed(action, player, oldRank, changedBy);

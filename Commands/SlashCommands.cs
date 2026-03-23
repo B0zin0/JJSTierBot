@@ -8,9 +8,9 @@ namespace JJSTierBot.Commands
 {
     public class SlashCommands
     {
-        private readonly DataService      _data;
-        private readonly TierListService  _tierList;
-        private readonly TierListRenderer _renderer;
+        private readonly DataService         _data;
+        private readonly TierListService     _tierList;
+        private readonly TierListRenderer    _renderer;
         private readonly DiscordSocketClient _client;
 
         public SlashCommands(DataService data, TierListService tierList,
@@ -31,8 +31,10 @@ namespace JJSTierBot.Commands
                 case "retire":    await Retire(cmd);    break;
                 case "rank":      await Rank(cmd);      break;
                 case "list":      await List(cmd);      break;
+                case "alltime":   await AllTime(cmd);   break;
                 case "challenge": await Challenge(cmd); break;
                 case "history":   await History(cmd);   break;
+                case "stats":     await Stats(cmd);     break;
                 case "setup":     await Setup(cmd);     break;
             }
         }
@@ -57,12 +59,19 @@ namespace JJSTierBot.Commands
             { await cmd.RespondAsync("Player name can't be empty.", ephemeral: true); return; }
 
             if (!DataService.IsValidRank(rank))
-            { await cmd.RespondAsync($"Invalid rank. Valid ranks: {string.Join(", ", DataService.RankOrder)}", ephemeral: true); return; }
+            { await cmd.RespondAsync($"Invalid rank. Valid: {string.Join(", ", DataService.RankOrder)}", ephemeral: true); return; }
 
             if (_data.FindPlayer(name) != null)
             { await cmd.RespondAsync($"**{name}** is already in the tier list.", ephemeral: true); return; }
 
-            var player = new Player { Name = name, RobloxUser = roblox, Rank = rank };
+            var player = new Player
+            {
+                Name       = name,
+                RobloxUser = roblox,
+                Rank       = rank,
+                RankHistory = new List<string> { rank }
+            };
+
             _data.Data.Players.Add(player);
             _data.AddHistory(name, "", rank, "Added", cmd.User.Username);
             _data.Save();
@@ -71,13 +80,13 @@ namespace JJSTierBot.Commands
             await _tierList.LogChange("Player Added", player, "", cmd.User.Username);
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("Player Added")
+                .WithTitle("✅  Player Added")
                 .WithColor(DataService.RankColor(rank))
-                .AddField("Name",   name,                                        inline: true)
-                .AddField("Rank",   $"{DataService.RankEmoji(rank)} {rank}",     inline: true)
-                .AddField("Roblox", roblox == "" ? "Not set" : roblox,           inline: true)
+                .AddField("Name",   name,                                    inline: true)
+                .AddField("Rank",   $"{DataService.RankEmoji(rank)} {rank}", inline: true)
+                .AddField("Roblox", roblox == "" ? "Not set" : roblox,       inline: true)
                 .WithFooter("JJS Tier Bot")
-                .Build());
+                .Build(), ephemeral: true);
         }
 
         private async Task Remove(SocketSlashCommand cmd)
@@ -89,16 +98,17 @@ namespace JJSTierBot.Commands
             var player = _data.FindPlayer(name);
 
             if (player == null)
-            { await cmd.RespondAsync($"**{name}** wasn't found in the tier list.", ephemeral: true); return; }
+            { await cmd.RespondAsync($"**{name}** wasn't found.", ephemeral: true); return; }
 
+            var oldRank = player.Rank;
             _data.Data.Players.Remove(player);
-            _data.AddHistory(name, player.Rank, "", "Removed", cmd.User.Username);
+            _data.AddHistory(name, oldRank, "", "Removed", cmd.User.Username);
             _data.Save();
 
             await _tierList.UpdatePinnedList();
-            await _tierList.LogChange("Player Removed", player, player.Rank, cmd.User.Username);
+            await _tierList.LogChange("Player Removed", player, oldRank, cmd.User.Username);
 
-            await cmd.RespondAsync($"**{name}** has been removed from the tier list.");
+            await cmd.RespondAsync($"**{name}** removed from the tier list.", ephemeral: true);
         }
 
         private async Task Retire(SocketSlashCommand cmd)
@@ -122,11 +132,13 @@ namespace JJSTierBot.Commands
             await _tierList.LogChange("Player Retired", player, oldRank, cmd.User.Username);
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("Player Retired")
-                .WithColor(0xFFAA00)
-                .WithDescription($"**{name}** has been retired from the tournament. Thanks for competing!")
+                .WithTitle("🎖️  Player Retired")
+                .WithColor(0xFFD700)
+                .WithDescription($"**{name}** has been retired. Thanks for competing!")
+                .AddField("Final Rank",   oldRank,                         inline: true)
+                .AddField("Final Record", $"{player.Wins}W-{player.Losses}L", inline: true)
                 .WithFooter("JJS Tier Bot")
-                .Build());
+                .Build(), ephemeral: true);
         }
 
         private async Task Rank(SocketSlashCommand cmd)
@@ -146,6 +158,9 @@ namespace JJSTierBot.Commands
 
             var oldRank = player.Rank;
             player.Rank = newRank;
+            if (!player.RankHistory.Contains(newRank))
+                player.RankHistory.Add(newRank);
+
             _data.AddHistory(name, oldRank, newRank, "Rank Change", cmd.User.Username);
             _data.Save();
 
@@ -153,18 +168,37 @@ namespace JJSTierBot.Commands
             await _tierList.LogChange("Rank Changed", player, oldRank, cmd.User.Username);
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("Rank Updated")
+                .WithTitle("📈  Rank Updated")
                 .WithColor(DataService.RankColor(newRank))
-                .AddField("Player", name,                                         inline: true)
-                .AddField("Old",    $"{DataService.RankEmoji(oldRank)} {oldRank}", inline: true)
-                .AddField("New",    $"{DataService.RankEmoji(newRank)} {newRank}", inline: true)
+                .AddField("Player", name,                                          inline: true)
+                .AddField("Before", $"{DataService.RankEmoji(oldRank)} {oldRank}", inline: true)
+                .AddField("After",  $"{DataService.RankEmoji(newRank)} {newRank}", inline: true)
                 .WithFooter("JJS Tier Bot")
-                .Build());
+                .Build(), ephemeral: true);
         }
 
         private async Task List(SocketSlashCommand cmd)
         {
-            await cmd.RespondAsync(embed: _renderer.BuildTierListEmbed());
+            await cmd.RespondAsync(
+                embed: _renderer.BuildTierListEmbed(),
+                ephemeral: false);
+
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(10 * 60 * 1000);
+                try { await cmd.DeleteOriginalResponseAsync(); } catch { }
+            });
+        }
+
+        private async Task AllTime(SocketSlashCommand cmd)
+        {
+            await cmd.RespondAsync(embed: _renderer.BuildAllTimeEmbed());
+
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(10 * 60 * 1000);
+                try { await cmd.DeleteOriginalResponseAsync(); } catch { }
+            });
         }
 
         private async Task Challenge(SocketSlashCommand cmd)
@@ -184,32 +218,41 @@ namespace JJSTierBot.Commands
             if (loserPlayer == null)
             { await cmd.RespondAsync($"**{loser}** wasn't found.", ephemeral: true); return; }
 
+            winnerPlayer.Wins++;
+            loserPlayer.Losses++;
+
             _data.AddHistory(winner, winnerPlayer.Rank, winnerPlayer.Rank,
                 $"Beat {loser}", cmd.User.Username);
             _data.Save();
+
+            await _tierList.UpdatePinnedList();
 
             var logChannelId = _data.Data.LogChannelId;
             if (logChannelId != 0 &&
                 _client.GetChannel(logChannelId) is ITextChannel logChan)
             {
                 await logChan.SendMessageAsync(embed: new EmbedBuilder()
-                    .WithTitle("Challenge Result")
-                    .WithColor(0xFFAA00)
-                    .AddField("Winner", $"**{winner}** ({DataService.RankEmoji(winnerPlayer.Rank)} {winnerPlayer.Rank})", inline: true)
-                    .AddField("Loser",  $"**{loser}** ({DataService.RankEmoji(loserPlayer.Rank)} {loserPlayer.Rank})",   inline: true)
-                    .AddField("Notes",  notes == "" ? "None" : notes)
+                    .WithTitle("⚔️  Challenge Result")
+                    .WithColor(0xFFD700)
+                    .AddField("🏆 Winner",
+                        $"**{winner}**\n{DataService.RankEmoji(winnerPlayer.Rank)} {winnerPlayer.Rank}\n`{winnerPlayer.Wins}W-{winnerPlayer.Losses}L`",
+                        inline: true)
+                    .AddField("💀 Loser",
+                        $"**{loser}**\n{DataService.RankEmoji(loserPlayer.Rank)} {loserPlayer.Rank}\n`{loserPlayer.Wins}W-{loserPlayer.Losses}L`",
+                        inline: true)
+                    .AddField("Notes", notes == "" ? "None" : notes)
                     .WithTimestamp(DateTimeOffset.UtcNow)
                     .WithFooter($"Logged by {cmd.User.Username} — JJS Tier Bot")
                     .Build());
             }
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("Challenge Logged")
-                .WithColor(0xFFAA00)
-                .AddField("Winner", winner, inline: true)
-                .AddField("Loser",  loser,  inline: true)
+                .WithTitle("✅  Challenge Logged")
+                .WithColor(0xFFD700)
+                .AddField("Winner", $"{winner}  `{winnerPlayer.Wins}W-{winnerPlayer.Losses}L`", inline: true)
+                .AddField("Loser",  $"{loser}  `{loserPlayer.Wins}W-{loserPlayer.Losses}L`",   inline: true)
                 .WithFooter("JJS Tier Bot")
-                .Build());
+                .Build(), ephemeral: true);
         }
 
         private async Task History(SocketSlashCommand cmd)
@@ -224,13 +267,46 @@ namespace JJSTierBot.Commands
                 sb.AppendLine($"`{e.Timestamp}` **{e.PlayerName}** — {e.Action}" +
                     (e.OldRank != "" && e.NewRank != "" && e.OldRank != e.NewRank
                         ? $" ({e.OldRank} → {e.NewRank})" : "") +
-                    $" by {e.ChangedBy}");
+                    $" · {e.ChangedBy}");
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("Tier List History")
+                .WithTitle("📋  Recent Changes")
                 .WithDescription(sb.ToString())
-                .WithColor(0xFFAA00)
+                .WithColor(0xFFD700)
                 .WithFooter("Showing last 15 changes — JJS Tier Bot")
+                .Build(), ephemeral: true);
+        }
+
+        private async Task Stats(SocketSlashCommand cmd)
+        {
+            var name   = cmd.Data.Options.FirstOrDefault()?.Value?.ToString()?.Trim() ?? "";
+            var player = _data.FindPlayerIncludeRetired(name);
+
+            if (player == null)
+            { await cmd.RespondAsync($"**{name}** wasn't found.", ephemeral: true); return; }
+
+            var total  = player.Wins + player.Losses;
+            var wr     = total > 0 ? $"{(player.Wins * 100 / total)}%" : "N/A";
+            var peak   = player.RankHistory.Count > 0
+                ? player.RankHistory.OrderBy(r =>
+                    Array.IndexOf(DataService.RankOrder, r)).First()
+                : player.Rank;
+
+            var rankHistoryStr = player.RankHistory.Count > 0
+                ? string.Join(" → ", player.RankHistory)
+                : "No rank changes yet";
+
+            await cmd.RespondAsync(embed: new EmbedBuilder()
+                .WithTitle($"📊  {player.Name}'s Stats")
+                .WithColor(DataService.RankColor(player.Rank))
+                .AddField("Current Rank", $"{DataService.RankEmoji(player.Rank)} {player.Rank}", inline: true)
+                .AddField("Record",       $"{player.Wins}W - {player.Losses}L",                  inline: true)
+                .AddField("Win Rate",     wr,                                                      inline: true)
+                .AddField("Peak Rank",    $"{DataService.RankEmoji(peak)} {peak}",                inline: true)
+                .AddField("Status",       player.Retired ? "🎖️ Retired" : "⚔️ Active",           inline: true)
+                .AddField("Joined",       player.AddedAt,                                          inline: true)
+                .AddField("Rank History", rankHistoryStr)
+                .WithFooter("JJS Tier Bot · All Time Stats")
                 .Build());
         }
 
@@ -244,17 +320,19 @@ namespace JJSTierBot.Commands
 
             if (tierChan != null) _data.Data.TierListChannelId = tierChan.Id;
             if (logChan  != null) _data.Data.LogChannelId      = logChan.Id;
+            _data.Data.PinnedMessageId        = 0;
+            _data.Data.AllTimePinnedMessageId = 0;
             _data.Save();
 
             await _tierList.UpdatePinnedList();
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("JJS Tier Bot Setup Complete")
-                .WithColor(0xFFAA00)
+                .WithTitle("✅  Setup Complete")
+                .WithColor(0xFFD700)
                 .AddField("Tier List Channel", tierChan?.Name ?? "Not set", inline: true)
                 .AddField("Log Channel",       logChan?.Name  ?? "Not set", inline: true)
                 .WithFooter("JJS Tier Bot — ready to go!")
-                .Build());
+                .Build(), ephemeral: true);
         }
 
         public static SlashCommandProperties[] GetCommandDefinitions()
@@ -271,13 +349,13 @@ namespace JJSTierBot.Commands
 
                 new SlashCommandBuilder()
                     .WithName("remove")
-                    .WithDescription("Remove a player from the tier list (admin only)")
+                    .WithDescription("Remove a player (admin only)")
                     .AddOption("name", ApplicationCommandOptionType.String, "Player name", isRequired: true)
                     .Build(),
 
                 new SlashCommandBuilder()
                     .WithName("retire")
-                    .WithDescription("Retire a player from the tournament (admin only)")
+                    .WithDescription("Retire a player (admin only)")
                     .AddOption("name", ApplicationCommandOptionType.String, "Player name", isRequired: true)
                     .Build(),
 
@@ -290,7 +368,12 @@ namespace JJSTierBot.Commands
 
                 new SlashCommandBuilder()
                     .WithName("list")
-                    .WithDescription("Show the full tier list")
+                    .WithDescription("Show the current tier list (disappears after 10 minutes)")
+                    .Build(),
+
+                new SlashCommandBuilder()
+                    .WithName("alltime")
+                    .WithDescription("Show all time win/loss records")
                     .Build(),
 
                 new SlashCommandBuilder()
@@ -304,6 +387,12 @@ namespace JJSTierBot.Commands
                 new SlashCommandBuilder()
                     .WithName("history")
                     .WithDescription("Show recent tier list changes")
+                    .Build(),
+
+                new SlashCommandBuilder()
+                    .WithName("stats")
+                    .WithDescription("Show a player's full stats and rank history")
+                    .AddOption("name", ApplicationCommandOptionType.String, "Player name", isRequired: true)
                     .Build(),
 
                 new SlashCommandBuilder()
