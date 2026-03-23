@@ -1,222 +1,316 @@
 using Discord;
 using Discord.WebSocket;
-using JesseDex.Models;
-using JesseDex.Services;
-using System.Linq;
+using JJSTierBot.Models;
+using JJSTierBot.Services;
 using System.Text;
-using System.Threading.Tasks;
 
-namespace JesseDex.Commands
+namespace JJSTierBot.Commands
 {
     public class SlashCommands
     {
-        private readonly DatabaseService _db;
-        private readonly SpawnService    _spawn;
+        private readonly DataService      _data;
+        private readonly TierListService  _tierList;
+        private readonly TierListRenderer _renderer;
+        private readonly DiscordSocketClient _client;
 
-        public SlashCommands(DatabaseService db, SpawnService spawn)
+        public SlashCommands(DataService data, TierListService tierList,
+            TierListRenderer renderer, DiscordSocketClient client)
         {
-            _db    = db;
-            _spawn = spawn;
+            _data     = data;
+            _tierList = tierList;
+            _renderer = renderer;
+            _client   = client;
         }
 
-        public async Task Handle(SocketSlashCommand command)
+        public async Task Handle(SocketSlashCommand cmd)
         {
-            switch (command.CommandName)
+            switch (cmd.CommandName)
             {
-                case "inv":    await Inv(command);   break;
-                case "dex":    await Dex(command);   break;
-                case "char":   await Char(command);  break;
-                case "lb":     await Lb(command);    break;
-                case "trade":  await Trade(command); break;
-                case "spawn":  await Spawn(command); break;
+                case "add":       await Add(cmd);       break;
+                case "remove":    await Remove(cmd);    break;
+                case "retire":    await Retire(cmd);    break;
+                case "rank":      await Rank(cmd);      break;
+                case "list":      await List(cmd);      break;
+                case "challenge": await Challenge(cmd); break;
+                case "history":   await History(cmd);   break;
+                case "setup":     await Setup(cmd);     break;
             }
         }
 
-        private async Task Inv(SocketSlashCommand cmd)
+        private static bool IsAdmin(SocketSlashCommand cmd)
         {
-            var player = await _db.GetOrCreatePlayer(cmd.User.Id, cmd.User.Username);
-
-            if (player.CaughtCharacterIds.Count == 0)
-            {
-                await cmd.RespondAsync(embed: new EmbedBuilder()
-                    .WithTitle($"{cmd.User.Username}'s Collection")
-                    .WithDescription("You haven't caught anyone yet! Wait for a character to spawn and be the first to pick the right name.")
-                    .WithColor(0xFFAA00)
-                    .WithFooter("JesseDex by B0zin0")
-                    .Build(), ephemeral: true);
-                return;
-            }
-
-            var caught = CharacterData.All
-                .Where(c => player.CaughtCharacterIds.Contains(c.Id))
-                .OrderBy(c => c.Season)
-                .ThenBy(c => c.Rarity)
-                .ToList();
-
-            var sb = new StringBuilder();
-            foreach (var c in caught)
-            {
-                var star = c.Rarity switch
-                {
-                    "Legendary" => "⭐",
-                    "Epic"      => "💜",
-                    "Rare"      => "💙",
-                    _           => "⬜"
-                };
-                sb.AppendLine($"{star} **{c.Name}** — {c.Rarity} · {c.Season}");
-            }
-
-            await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle($"{cmd.User.Username}'s Collection")
-                .WithDescription(sb.ToString())
-                .WithColor(0xFFAA00)
-                .AddField("Progress", $"{caught.Count} / {CharacterData.All.Count} characters", inline: true)
-                .WithFooter("JesseDex by B0zin0")
-                .Build(), ephemeral: true);
+            if (cmd.User is not SocketGuildUser user) return false;
+            return user.GuildPermissions.Administrator ||
+                   user.GuildPermissions.ManageGuild;
         }
 
-        private async Task Dex(SocketSlashCommand cmd)
+        private async Task Add(SocketSlashCommand cmd)
         {
-            var player = await _db.GetOrCreatePlayer(cmd.User.Id, cmd.User.Username);
+            if (!IsAdmin(cmd))
+            { await cmd.RespondAsync("Only admins can do that.", ephemeral: true); return; }
 
-            var sb = new StringBuilder();
-            foreach (var c in CharacterData.All.OrderBy(c => c.Season).ThenBy(c => c.Name))
-            {
-                var owned = player.CaughtCharacterIds.Contains(c.Id);
-                var star  = c.Rarity switch
-                {
-                    "Legendary" => "⭐",
-                    "Epic"      => "💜",
-                    "Rare"      => "💙",
-                    _           => "⬜"
-                };
-                sb.AppendLine(owned
-                    ? $"{star} **{c.Name}** ✅ · {c.Season}"
-                    : $"⬛ ??? · {c.Season}");
-            }
+            var name   = cmd.Data.Options.FirstOrDefault(o => o.Name == "name")?.Value?.ToString()?.Trim()   ?? "";
+            var roblox = cmd.Data.Options.FirstOrDefault(o => o.Name == "roblox")?.Value?.ToString()?.Trim() ?? "";
+            var rank   = cmd.Data.Options.FirstOrDefault(o => o.Name == "rank")?.Value?.ToString()           ?? "Unranked";
 
-            await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("JesseDex — Full Character List")
-                .WithDescription(sb.ToString())
-                .WithColor(0xFFAA00)
-                .AddField("Your progress", $"{player.TotalCaught} / {CharacterData.All.Count}")
-                .WithFooter("Question marks mean you haven't caught them yet — JesseDex by B0zin0")
-                .Build(), ephemeral: true);
-        }
-
-        private async Task Char(SocketSlashCommand cmd)
-        {
-            var name = cmd.Data.Options.FirstOrDefault()?.Value?.ToString()?.Trim();
             if (string.IsNullOrEmpty(name))
-            {
-                await cmd.RespondAsync("Please provide a character name.", ephemeral: true);
-                return;
-            }
+            { await cmd.RespondAsync("Player name can't be empty.", ephemeral: true); return; }
 
-            var character = CharacterData.All
-                .FirstOrDefault(c => c.Name.ToLower() == name.ToLower());
+            if (!DataService.IsValidRank(rank))
+            { await cmd.RespondAsync($"Invalid rank. Valid ranks: {string.Join(", ", DataService.RankOrder)}", ephemeral: true); return; }
 
-            if (character == null)
-            {
-                await cmd.RespondAsync($"No character called **{name}** found in JesseDex.", ephemeral: true);
-                return;
-            }
+            if (_data.FindPlayer(name) != null)
+            { await cmd.RespondAsync($"**{name}** is already in the tier list.", ephemeral: true); return; }
 
-            var player = await _db.GetOrCreatePlayer(cmd.User.Id, cmd.User.Username);
-            var owned  = player.CaughtCharacterIds.Contains(character.Id);
+            var player = new Player { Name = name, RobloxUser = roblox, Rank = rank };
+            _data.Data.Players.Add(player);
+            _data.AddHistory(name, "", rank, "Added", cmd.User.Username);
+            _data.Save();
+
+            await _tierList.UpdatePinnedList();
+            await _tierList.LogChange("Player Added", player, "", cmd.User.Username);
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle(character.Name)
-                .WithDescription(character.Description)
-                .WithImageUrl(character.ImageUrl)
-                .WithColor(CharacterData.RarityColorUint(character.Rarity))
-                .AddField("Rarity",  character.Rarity,              inline: true)
-                .AddField("Season",  character.Season,              inline: true)
-                .AddField("Status",  owned ? "✅ You own this!" : "❌ Not caught yet", inline: true)
-                .WithFooter("JesseDex by B0zin0")
+                .WithTitle("Player Added")
+                .WithColor(DataService.RankColor(rank))
+                .AddField("Name",   name,                                        inline: true)
+                .AddField("Rank",   $"{DataService.RankEmoji(rank)} {rank}",     inline: true)
+                .AddField("Roblox", roblox == "" ? "Not set" : roblox,           inline: true)
+                .WithFooter("JJS Tier Bot")
                 .Build());
         }
 
-        private async Task Lb(SocketSlashCommand cmd)
+        private async Task Remove(SocketSlashCommand cmd)
         {
-            var top = await _db.GetLeaderboard(10);
+            if (!IsAdmin(cmd))
+            { await cmd.RespondAsync("Only admins can do that.", ephemeral: true); return; }
 
-            if (top.Count == 0)
+            var name   = cmd.Data.Options.FirstOrDefault()?.Value?.ToString()?.Trim() ?? "";
+            var player = _data.FindPlayer(name);
+
+            if (player == null)
+            { await cmd.RespondAsync($"**{name}** wasn't found in the tier list.", ephemeral: true); return; }
+
+            _data.Data.Players.Remove(player);
+            _data.AddHistory(name, player.Rank, "", "Removed", cmd.User.Username);
+            _data.Save();
+
+            await _tierList.UpdatePinnedList();
+            await _tierList.LogChange("Player Removed", player, player.Rank, cmd.User.Username);
+
+            await cmd.RespondAsync($"**{name}** has been removed from the tier list.");
+        }
+
+        private async Task Retire(SocketSlashCommand cmd)
+        {
+            if (!IsAdmin(cmd))
+            { await cmd.RespondAsync("Only admins can do that.", ephemeral: true); return; }
+
+            var name   = cmd.Data.Options.FirstOrDefault()?.Value?.ToString()?.Trim() ?? "";
+            var player = _data.FindPlayer(name);
+
+            if (player == null)
+            { await cmd.RespondAsync($"**{name}** wasn't found.", ephemeral: true); return; }
+
+            var oldRank    = player.Rank;
+            player.Retired = true;
+            player.Rank    = "Retired";
+            _data.AddHistory(name, oldRank, "Retired", "Retired", cmd.User.Username);
+            _data.Save();
+
+            await _tierList.UpdatePinnedList();
+            await _tierList.LogChange("Player Retired", player, oldRank, cmd.User.Username);
+
+            await cmd.RespondAsync(embed: new EmbedBuilder()
+                .WithTitle("Player Retired")
+                .WithColor(0xFFAA00)
+                .WithDescription($"**{name}** has been retired from the tournament. Thanks for competing!")
+                .WithFooter("JJS Tier Bot")
+                .Build());
+        }
+
+        private async Task Rank(SocketSlashCommand cmd)
+        {
+            if (!IsAdmin(cmd))
+            { await cmd.RespondAsync("Only admins can do that.", ephemeral: true); return; }
+
+            var name    = cmd.Data.Options.FirstOrDefault(o => o.Name == "name")?.Value?.ToString()?.Trim() ?? "";
+            var newRank = cmd.Data.Options.FirstOrDefault(o => o.Name == "rank")?.Value?.ToString()         ?? "";
+            var player  = _data.FindPlayer(name);
+
+            if (player == null)
+            { await cmd.RespondAsync($"**{name}** wasn't found.", ephemeral: true); return; }
+
+            if (!DataService.IsValidRank(newRank))
+            { await cmd.RespondAsync($"Invalid rank. Valid: {string.Join(", ", DataService.RankOrder)}", ephemeral: true); return; }
+
+            var oldRank = player.Rank;
+            player.Rank = newRank;
+            _data.AddHistory(name, oldRank, newRank, "Rank Change", cmd.User.Username);
+            _data.Save();
+
+            await _tierList.UpdatePinnedList();
+            await _tierList.LogChange("Rank Changed", player, oldRank, cmd.User.Username);
+
+            await cmd.RespondAsync(embed: new EmbedBuilder()
+                .WithTitle("Rank Updated")
+                .WithColor(DataService.RankColor(newRank))
+                .AddField("Player", name,                                         inline: true)
+                .AddField("Old",    $"{DataService.RankEmoji(oldRank)} {oldRank}", inline: true)
+                .AddField("New",    $"{DataService.RankEmoji(newRank)} {newRank}", inline: true)
+                .WithFooter("JJS Tier Bot")
+                .Build());
+        }
+
+        private async Task List(SocketSlashCommand cmd)
+        {
+            await cmd.RespondAsync(embed: _renderer.BuildTierListEmbed());
+        }
+
+        private async Task Challenge(SocketSlashCommand cmd)
+        {
+            if (!IsAdmin(cmd))
+            { await cmd.RespondAsync("Only admins can log challenges.", ephemeral: true); return; }
+
+            var winner = cmd.Data.Options.FirstOrDefault(o => o.Name == "winner")?.Value?.ToString()?.Trim() ?? "";
+            var loser  = cmd.Data.Options.FirstOrDefault(o => o.Name == "loser")?.Value?.ToString()?.Trim()  ?? "";
+            var notes  = cmd.Data.Options.FirstOrDefault(o => o.Name == "notes")?.Value?.ToString()?.Trim()  ?? "";
+
+            var winnerPlayer = _data.FindPlayer(winner);
+            var loserPlayer  = _data.FindPlayer(loser);
+
+            if (winnerPlayer == null)
+            { await cmd.RespondAsync($"**{winner}** wasn't found.", ephemeral: true); return; }
+            if (loserPlayer == null)
+            { await cmd.RespondAsync($"**{loser}** wasn't found.", ephemeral: true); return; }
+
+            _data.AddHistory(winner, winnerPlayer.Rank, winnerPlayer.Rank,
+                $"Beat {loser}", cmd.User.Username);
+            _data.Save();
+
+            var logChannelId = _data.Data.LogChannelId;
+            if (logChannelId != 0 &&
+                _client.GetChannel(logChannelId) is ITextChannel logChan)
             {
-                await cmd.RespondAsync("Nobody has caught anything yet — be the first!", ephemeral: true);
-                return;
+                await logChan.SendMessageAsync(embed: new EmbedBuilder()
+                    .WithTitle("Challenge Result")
+                    .WithColor(0xFFAA00)
+                    .AddField("Winner", $"**{winner}** ({DataService.RankEmoji(winnerPlayer.Rank)} {winnerPlayer.Rank})", inline: true)
+                    .AddField("Loser",  $"**{loser}** ({DataService.RankEmoji(loserPlayer.Rank)} {loserPlayer.Rank})",   inline: true)
+                    .AddField("Notes",  notes == "" ? "None" : notes)
+                    .WithTimestamp(DateTimeOffset.UtcNow)
+                    .WithFooter($"Logged by {cmd.User.Username} — JJS Tier Bot")
+                    .Build());
             }
+
+            await cmd.RespondAsync(embed: new EmbedBuilder()
+                .WithTitle("Challenge Logged")
+                .WithColor(0xFFAA00)
+                .AddField("Winner", winner, inline: true)
+                .AddField("Loser",  loser,  inline: true)
+                .WithFooter("JJS Tier Bot")
+                .Build());
+        }
+
+        private async Task History(SocketSlashCommand cmd)
+        {
+            var entries = _data.Data.History.Take(15).ToList();
+
+            if (entries.Count == 0)
+            { await cmd.RespondAsync("No history yet.", ephemeral: true); return; }
 
             var sb = new StringBuilder();
-            for (int i = 0; i < top.Count; i++)
-            {
-                var medal = i switch { 0 => "🥇", 1 => "🥈", 2 => "🥉", _ => $"#{i + 1}" };
-                sb.AppendLine($"{medal} **{top[i].Username}** — {top[i].TotalCaught} caught");
-            }
+            foreach (var e in entries)
+                sb.AppendLine($"`{e.Timestamp}` **{e.PlayerName}** — {e.Action}" +
+                    (e.OldRank != "" && e.NewRank != "" && e.OldRank != e.NewRank
+                        ? $" ({e.OldRank} → {e.NewRank})" : "") +
+                    $" by {e.ChangedBy}");
 
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("JesseDex Leaderboard")
+                .WithTitle("Tier List History")
                 .WithDescription(sb.ToString())
                 .WithColor(0xFFAA00)
-                .WithFooter("JesseDex by B0zin0 — keep catching to climb the ranks!")
+                .WithFooter("Showing last 15 changes — JJS Tier Bot")
                 .Build());
         }
 
-        private async Task Trade(SocketSlashCommand cmd)
+        private async Task Setup(SocketSlashCommand cmd)
         {
+            if (!IsAdmin(cmd))
+            { await cmd.RespondAsync("Only admins can set up the bot.", ephemeral: true); return; }
+
+            var tierChan = cmd.Data.Options.FirstOrDefault(o => o.Name == "tierchannel")?.Value as IChannel;
+            var logChan  = cmd.Data.Options.FirstOrDefault(o => o.Name == "logchannel")?.Value  as IChannel;
+
+            if (tierChan != null) _data.Data.TierListChannelId = tierChan.Id;
+            if (logChan  != null) _data.Data.LogChannelId      = logChan.Id;
+            _data.Save();
+
+            await _tierList.UpdatePinnedList();
+
             await cmd.RespondAsync(embed: new EmbedBuilder()
-                .WithTitle("Trading")
-                .WithDescription("Trading is coming in a future update! For now, focus on catching — there are 20 characters to find.")
+                .WithTitle("JJS Tier Bot Setup Complete")
                 .WithColor(0xFFAA00)
-                .WithFooter("JesseDex by B0zin0")
-                .Build(), ephemeral: true);
-        }
-
-        private async Task Spawn(SocketSlashCommand cmd)
-        {
-            if (cmd.User is not SocketGuildUser gUser || !gUser.GuildPermissions.Administrator)
-            {
-                await cmd.RespondAsync("Only admins can force a spawn.", ephemeral: true);
-                return;
-            }
-
-            await cmd.RespondAsync("Spawning a character...", ephemeral: true);
-            await _spawn.SpawnInChannel(cmd.Channel.Id);
+                .AddField("Tier List Channel", tierChan?.Name ?? "Not set", inline: true)
+                .AddField("Log Channel",       logChan?.Name  ?? "Not set", inline: true)
+                .WithFooter("JJS Tier Bot — ready to go!")
+                .Build());
         }
 
         public static SlashCommandProperties[] GetCommandDefinitions()
         {
-            return new SlashCommandProperties[]
+            return new[]
             {
                 new SlashCommandBuilder()
-                    .WithName("inv")
-                    .WithDescription("View your JesseDex collection")
+                    .WithName("add")
+                    .WithDescription("Add a player to the tier list (admin only)")
+                    .AddOption("name",   ApplicationCommandOptionType.String, "Player name",     isRequired: true)
+                    .AddOption("rank",   ApplicationCommandOptionType.String, "Starting rank",   isRequired: true)
+                    .AddOption("roblox", ApplicationCommandOptionType.String, "Roblox username", isRequired: false)
                     .Build(),
 
                 new SlashCommandBuilder()
-                    .WithName("dex")
-                    .WithDescription("See all characters and which ones you're missing")
+                    .WithName("remove")
+                    .WithDescription("Remove a player from the tier list (admin only)")
+                    .AddOption("name", ApplicationCommandOptionType.String, "Player name", isRequired: true)
                     .Build(),
 
                 new SlashCommandBuilder()
-                    .WithName("char")
-                    .WithDescription("Get info on a specific character")
-                    .AddOption("name", ApplicationCommandOptionType.String, "Character name", isRequired: true)
+                    .WithName("retire")
+                    .WithDescription("Retire a player from the tournament (admin only)")
+                    .AddOption("name", ApplicationCommandOptionType.String, "Player name", isRequired: true)
                     .Build(),
 
                 new SlashCommandBuilder()
-                    .WithName("lb")
-                    .WithDescription("Show the JesseDex leaderboard")
+                    .WithName("rank")
+                    .WithDescription("Change a player's rank (admin only)")
+                    .AddOption("name", ApplicationCommandOptionType.String, "Player name",                        isRequired: true)
+                    .AddOption("rank", ApplicationCommandOptionType.String, "New rank (S/A+/A/B/C/D/F/Unranked)", isRequired: true)
                     .Build(),
 
                 new SlashCommandBuilder()
-                    .WithName("trade")
-                    .WithDescription("Trade characters with another player")
+                    .WithName("list")
+                    .WithDescription("Show the full tier list")
                     .Build(),
 
                 new SlashCommandBuilder()
-                    .WithName("spawn")
-                    .WithDescription("Force a character to spawn (admin only)")
+                    .WithName("challenge")
+                    .WithDescription("Log a challenge result (admin only)")
+                    .AddOption("winner", ApplicationCommandOptionType.String, "Winner's name", isRequired: true)
+                    .AddOption("loser",  ApplicationCommandOptionType.String, "Loser's name",  isRequired: true)
+                    .AddOption("notes",  ApplicationCommandOptionType.String, "Extra notes",   isRequired: false)
+                    .Build(),
+
+                new SlashCommandBuilder()
+                    .WithName("history")
+                    .WithDescription("Show recent tier list changes")
+                    .Build(),
+
+                new SlashCommandBuilder()
+                    .WithName("setup")
+                    .WithDescription("Set up tier list and log channels (admin only)")
+                    .AddOption("tierchannel", ApplicationCommandOptionType.Channel, "Where to post the tier list", isRequired: true)
+                    .AddOption("logchannel",  ApplicationCommandOptionType.Channel, "Where to log changes",        isRequired: true)
                     .Build(),
             };
         }
