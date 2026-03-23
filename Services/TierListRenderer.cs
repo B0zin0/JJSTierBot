@@ -110,7 +110,7 @@ namespace JJSTierBot.Services
             });
 
             var chunks = lines.Chunk(10).ToList();
-            for (int i = 0; i < chunks.Length; i++)
+            for (int i = 0; i < chunks.Count; i++)
             {
                 builder.AddField(
                     i == 0 ? "Rankings" : "​",
