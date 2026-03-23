@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>JesseDex</AssemblyName>
+    <RootNamespace>JesseDex</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Discord.Net"                    Version="3.14.1"/>
+    <PackageReference Include="MongoDB.Driver"                 Version="2.25.0"/>
+  </ItemGroup>
+</Project>
